@@ -1,0 +1,167 @@
+// ================= MOTOR PINS =================
+#define AIN1 4
+#define AIN2 5
+#define PWMA 3
+
+#define BIN1 7
+#define BIN2 8
+#define PWMB 6
+
+#define STBY 2
+
+// ================= SENSOR =================
+int sensorPin[8] = {A0, A1, A2, A3, A4, A5, A6, A7};
+int weight[8] = {-3500, -2500, -1500, -500, 500, 1500, 2500, 3500};
+
+// ================= PID (TUNED) =================
+float Kp = 0.20;
+float Kd = 1.25;
+
+// ================= VARIABLES =================
+int lastError = 0;
+int lastDirection = 0; // -1 left, +1 right
+
+// ================= SETUP =================
+void setup() {
+  for(int i = 0; i < 8; i++) {
+    pinMode(sensorPin[i], INPUT);
+  }
+
+  pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT); pinMode(PWMA, OUTPUT);
+  pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT); pinMode(PWMB, OUTPUT);
+  pinMode(STBY, OUTPUT);
+
+  digitalWrite(STBY, HIGH);
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+
+  // 🔍 Count active sensors
+  int activeSensors = 0;
+  for(int i = 0; i < 8; i++) {
+    if(digitalRead(sensorPin[i]) == HIGH) activeSensors++;
+  }
+
+  // 🚨 JUNCTION → GO STRAIGHT (ignore branches)
+  if(activeSensors >= 5) {
+    moveMotor(190, 190);
+    delay(15);
+    return;
+  }
+
+  int error = readError();
+
+  // 🔒 LOCK when centered (prevents sudden deviation)
+  if(abs(error) < 300) {
+    lastDirection = 0;
+  }
+
+  // 🔥 HARD 90° TURN (pivot)
+  if (error > 3000) {
+    moveMotor(200, -200);
+    delay(15);
+    return;
+  }
+  if (error < -3000) {
+    moveMotor(-200, 200);
+    delay(15);
+    return;
+  }
+
+  // ================= PID =================
+  int P = error;
+  int D = error - lastError;
+
+  int PID_value = (Kp * P) + (Kd * D);
+  lastError = error;
+
+  // 🔥 Controlled boost (no overshoot)
+  if (abs(error) > 2000) {
+    PID_value *= 1.4;
+  }
+
+  // ================= SPEED CONTROL =================
+  int baseSpeed;
+
+  if (abs(error) < 400) {
+    baseSpeed = 210;   // 🚀 MAX SPEED straight
+  }
+  else if (abs(error) < 1500) {
+    baseSpeed = 180;   // smooth curve
+  }
+  else {
+    baseSpeed = 140;   // sharp turn
+  }
+
+  int leftMotorSpeed = baseSpeed + PID_value;
+  int rightMotorSpeed = baseSpeed - PID_value;
+
+  leftMotorSpeed = constrain(leftMotorSpeed, -255, 255);
+  rightMotorSpeed = constrain(rightMotorSpeed, -255, 255);
+
+  moveMotor(leftMotorSpeed, rightMotorSpeed);
+}
+
+// ================= ERROR FUNCTION =================
+int readError() {
+  long sum = 0;
+  int count = 0;
+
+  // 🔥 CENTER PRIORITY (ignore side branches)
+  if(digitalRead(sensorPin[3]) == HIGH || digitalRead(sensorPin[4]) == HIGH) {
+    for(int i = 0; i < 8; i++) {
+      if(digitalRead(sensorPin[i]) == HIGH) {
+        sum += weight[i];
+        count++;
+      }
+    }
+  } else {
+    for(int i = 2; i <= 5; i++) {
+      if(digitalRead(sensorPin[i]) == HIGH) {
+        sum += weight[i];
+        count++;
+      }
+    }
+  }
+
+  // 🚨 LINE LOST → smart recovery
+  if(count == 0) {
+    if(lastDirection > 0) return 4000;
+    else return -4000;
+  }
+
+  int error = sum / count;
+
+  // 🔁 SAVE DIRECTION
+  if(error > 0) lastDirection = 1;
+  else if(error < 0) lastDirection = -1;
+
+  return error;
+}
+
+// ================= MOTOR FUNCTION =================
+void moveMotor(int leftSpeed, int rightSpeed) {
+
+  // LEFT MOTOR
+  if(leftSpeed >= 0) {
+    digitalWrite(AIN1, HIGH);
+    digitalWrite(AIN2, LOW);
+    analogWrite(PWMA, leftSpeed);
+  } else {
+    digitalWrite(AIN1, LOW);
+    digitalWrite(AIN2, HIGH);
+    analogWrite(PWMA, -leftSpeed);
+  }
+
+  // RIGHT MOTOR
+  if(rightSpeed >= 0) {
+    digitalWrite(BIN1, HIGH);
+    digitalWrite(BIN2, LOW);
+    analogWrite(PWMB, rightSpeed);
+  } else {
+    digitalWrite(BIN1, LOW);
+    digitalWrite(BIN2, HIGH);
+    analogWrite(PWMB, -rightSpeed);
+  }
+}
